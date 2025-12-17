@@ -8,7 +8,12 @@ from app.models.requests import BadgeRequest, TextOverlayBadgeRequest, IconBased
 from app.models.responses import BadgeResponse
 from app.services.badge_service import BadgeService
 from app.services.config_generator import generate_text_overlay_config, generate_icon_based_config
-from app.services.file_storage import save_uploaded_logo, cleanup_temp_logo
+from app.services.file_storage import (
+    save_uploaded_logo,
+    cleanup_temp_logo,
+    save_uploaded_template,
+    cleanup_temp_template
+)
 from app.core.logging_config import get_logger
 
 router = APIRouter()
@@ -243,3 +248,80 @@ async def generate_badge_with_logo(
         # Step 6: Always cleanup temporary logo file
         if temp_logo_path:
             cleanup_temp_logo(temp_logo_path)
+
+
+@router.post("/badge/generate-from-template", response_model=BadgeResponse)
+async def generate_badge_from_template(
+    template: UploadFile = File(..., description="Template PNG file with transparent background"),
+    title: str = Form(..., description="Title text to overlay on the badge"),
+    subtitle: str = Form(..., description="Subtitle text to overlay on the badge"),
+    scale_factor: float = Form(default=1.0, description="Scale factor for rendering (1.0-3.0)"),
+    logo: UploadFile = File(default=None, description="Optional logo image to place at center top")
+):
+    """
+    Generate a badge by overlaying text and optional logo on an uploaded template image
+
+    This endpoint accepts a PNG template file and overlays centered title and subtitle text.
+    Optionally, a logo can be placed at the center top of the badge.
+    The template should have a transparent background for best results.
+
+    Args:
+        template: Uploaded PNG template file
+        title: Title text to display (centered, larger font)
+        subtitle: Subtitle text to display (centered, smaller font, below title)
+        scale_factor: Scale factor for output image (1.0-3.0, default 1.0)
+        logo: Optional logo image to place at center top
+
+    Returns:
+        BadgeResponse with base64 encoded PNG image
+    """
+    temp_template_path = None
+    temp_logo_path = None
+
+    try:
+        logger.info(f"Received template badge request: title='{title}', subtitle='{subtitle}', has_logo={logo is not None}")
+
+        # Validate scale_factor
+        if not (1.0 <= scale_factor <= 3.0):
+            raise HTTPException(
+                status_code=400,
+                detail="scale_factor must be between 1.0 and 3.0"
+            )
+
+        # Validate text inputs
+        if not title or not title.strip():
+            raise HTTPException(status_code=400, detail="Title cannot be empty")
+        if not subtitle or not subtitle.strip():
+            raise HTTPException(status_code=400, detail="Subtitle cannot be empty")
+
+        # Trim whitespace
+        title = title.strip()
+        subtitle = subtitle.strip()
+
+        # Save uploaded template temporarily
+        temp_template_path = await save_uploaded_template(template)
+
+        # Generate badge with text overlay
+        result = await badge_service.generate_from_template(
+            template_path=temp_template_path,
+            title=title,
+            subtitle=subtitle,
+            scale_factor=scale_factor
+        )
+
+        logger.info("Template badge generated successfully")
+        return result
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.error(f"Invalid input: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error generating template badge: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate badge: {str(e)}")
+
+    finally:
+        # Always cleanup temporary template file
+        if temp_template_path:
+            cleanup_temp_template(temp_template_path)

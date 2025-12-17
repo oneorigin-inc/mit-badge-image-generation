@@ -13,6 +13,10 @@ logger = get_logger("file_storage")
 ALLOWED_EXTENSIONS = {".png", ".svg"}
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
 
+# Template file settings
+ALLOWED_TEMPLATE_EXTENSIONS = {".png"}
+MAX_TEMPLATE_FILE_SIZE = 10 * 1024 * 1024  # 10MB for templates
+
 def get_upload_dir() -> Path:
     """Get the upload directory path and create it if it doesn't exist"""
     script_dir = Path(__file__).parent.parent.parent
@@ -124,3 +128,113 @@ def cleanup_temp_logo(file_path: str) -> None:
             logger.info(f"Cleaned up temp logo: {file_path}")
     except Exception as e:
         logger.warning(f"Failed to cleanup temp logo {file_path}: {str(e)}")
+
+
+# Template file functions
+
+def get_template_upload_dir() -> Path:
+    """Get the template upload directory path and create it if it doesn't exist"""
+    script_dir = Path(__file__).parent.parent.parent
+    upload_dir = script_dir / "uploads" / "templates"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    return upload_dir
+
+
+def validate_template_file(file: UploadFile) -> None:
+    """
+    Validate uploaded template file (PNG only)
+
+    Args:
+        file: Uploaded file
+
+    Raises:
+        HTTPException: If file is invalid
+    """
+    if not file.filename:
+        raise HTTPException(
+            status_code=400,
+            detail="No filename provided"
+        )
+
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in ALLOWED_TEMPLATE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type for template. Only PNG files are allowed."
+        )
+
+    if hasattr(file.file, 'seek') and hasattr(file.file, 'tell'):
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
+        file.file.seek(0)
+
+        if file_size > MAX_TEMPLATE_FILE_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large. Maximum size: {MAX_TEMPLATE_FILE_SIZE / 1024 / 1024}MB"
+            )
+
+
+async def save_uploaded_template(file: UploadFile) -> str:
+    """
+    Save uploaded template to temporary storage
+
+    Args:
+        file: Uploaded template file
+
+    Returns:
+        Relative path to saved file (e.g., "uploads/templates/abc123.png")
+
+    Raises:
+        HTTPException: If file is invalid or save fails
+    """
+    try:
+        validate_template_file(file)
+
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="No filename provided")
+
+        file_ext = Path(file.filename).suffix.lower()
+        unique_filename = f"{uuid.uuid4()}{file_ext}"
+
+        upload_dir = get_template_upload_dir()
+        file_path = upload_dir / unique_filename
+
+        contents = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(contents)
+
+        relative_path = f"uploads/templates/{unique_filename}"
+        logger.info(f"Saved uploaded template to: {relative_path}")
+
+        return relative_path
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to save uploaded template: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save uploaded template: {str(e)}"
+        )
+
+
+def cleanup_temp_template(file_path: str) -> None:
+    """
+    Delete temporary template file
+
+    Args:
+        file_path: Relative path to the file (e.g., "uploads/templates/abc123.png")
+    """
+    try:
+        if not file_path or not file_path.startswith("uploads/templates/"):
+            return
+
+        script_dir = Path(__file__).parent.parent.parent
+        full_path = script_dir / file_path
+
+        if full_path.exists():
+            full_path.unlink()
+            logger.info(f"Cleaned up temp template: {file_path}")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup temp template {file_path}: {str(e)}")
