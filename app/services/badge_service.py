@@ -22,7 +22,7 @@ logger = get_logger("badge_service")
 TEMPLATE_TEXT_DEFAULTS = {
     "title": {
         "font_path": "assets/fonts/ArialBold.ttf",
-        "font_size": 48,
+        "font_size": 42,
         "color": "#FFFFFF",
         "stroke_color": "#000000",
         "stroke_width": 2,
@@ -157,16 +157,18 @@ class BadgeService:
         template_path: str,
         title: str,
         subtitle: str,
-        scale_factor: float = 1.0
+        scale_factor: float = 1.0,
+        logo_path: str = ""
     ) -> BadgeResponse:
         """
-        Generate a badge by overlaying text on a template image
+        Generate a badge by overlaying text and optional logo on a template image
 
         Args:
             template_path: Relative path to the template PNG file
             title: Title text to overlay
             subtitle: Subtitle text to overlay
             scale_factor: Scale factor for output (1.0-3.0)
+            logo_path: Optional path to logo image to place at center top
 
         Returns:
             BadgeResponse with base64 encoded image
@@ -212,6 +214,55 @@ class BadgeService:
             # Calculate max width for text wrapping (canvas width minus padding on both sides)
             max_text_width = canvas_width - (padding * 2)
 
+            # Define the "safe zone" within the badge template
+            # Most badge templates have shapes that don't use the full canvas
+            content_top = int(canvas_height * 0.25)  # Start 25% from top
+            content_bottom = int(canvas_height * 0.82)  # End at 82% from top
+            content_height = content_bottom - content_top
+
+            # Load and place logo if provided
+            logo_height = 0
+            logo_bottom_y = content_top  # Default to content top if no logo
+            if logo_path:
+                full_logo_path = os.path.join(project_root, logo_path)
+                if os.path.exists(full_logo_path):
+                    logo_img = Image.open(full_logo_path).convert("RGBA")
+                    original_logo_w, original_logo_h = logo_img.size
+
+                    # Max logo size: 30% of canvas width, 18% of content height
+                    max_logo_width = int(canvas_width * 0.30)
+                    max_logo_height = int(content_height * 0.25)
+
+                    # Calculate scale factor to fit within bounds while maintaining aspect ratio
+                    scale_w = max_logo_width / original_logo_w
+                    scale_h = max_logo_height / original_logo_h
+                    logo_scale = min(scale_w, scale_h)
+
+                    # Apply scaling
+                    new_logo_w = int(original_logo_w * logo_scale)
+                    new_logo_h = int(original_logo_h * logo_scale)
+                    new_logo_w = max(1, new_logo_w)
+                    new_logo_h = max(1, new_logo_h)
+
+                    logger.info(f"Logo scaling: original={original_logo_w}x{original_logo_h}, "
+                               f"max_bounds={max_logo_width}x{max_logo_height}, "
+                               f"scale={logo_scale:.3f}, new={new_logo_w}x{new_logo_h}")
+
+                    if new_logo_w != original_logo_w or new_logo_h != original_logo_h:
+                        logo_img = logo_img.resize((new_logo_w, new_logo_h), Image.Resampling.LANCZOS)
+
+                    # Position logo at top of content area
+                    logo_x = (canvas_width - logo_img.width) // 2
+                    logo_y = content_top - int(content_height * 0.05)  # Move logo up slightly
+
+                    # Composite logo onto template
+                    template.alpha_composite(logo_img, dest=(logo_x, logo_y))
+
+                    logo_height = logo_img.height
+                    logo_bottom_y = logo_y + logo_height
+
+                    logger.info(f"Logo placed at ({logo_x}, {logo_y}), final size: {logo_img.width}x{logo_img.height}")
+
             # Wrap title and subtitle text
             title_lines = _wrap_text(draw, title, title_font, max_text_width)
             subtitle_lines = _wrap_text(draw, subtitle, subtitle_font, max_text_width)
@@ -229,8 +280,16 @@ class BadgeService:
             subtitle_block_height = len(subtitle_lines) * subtitle_line_height + (len(subtitle_lines) - 1) * (line_gap // 2) if subtitle_lines else 0
             total_text_height = title_block_height + line_gap + subtitle_block_height
 
-            # Calculate starting Y position to center the entire text block
-            start_y = (canvas_height - total_text_height) // 2
+            # Define consistent spacing between elements
+            element_gap = int(line_gap * 2)  # Gap between logo-title and title-subtitle
+
+            # Calculate starting Y position within the content area
+            if logo_path and logo_height > 0:
+                # Position text below logo with consistent gap
+                start_y = logo_bottom_y + element_gap
+            else:
+                # Center text vertically within the content area (not the full canvas)
+                start_y = content_top + (content_height - total_text_height) // 2
 
             # Draw title lines (centered)
             title_stroke_width = int(TEMPLATE_TEXT_DEFAULTS["title"]["stroke_width"] * scale_factor)
@@ -249,8 +308,8 @@ class BadgeService:
                 )
                 current_y += title_line_height + (line_gap // 2)
 
-            # Add gap between title and subtitle
-            current_y = start_y + title_block_height + line_gap
+            # Add gap between title and subtitle (same as logo-title gap)
+            current_y = start_y + title_block_height + element_gap
 
             # Draw subtitle lines (centered)
             subtitle_stroke_width = int(TEMPLATE_TEXT_DEFAULTS["subtitle"]["stroke_width"] * scale_factor)
@@ -281,7 +340,8 @@ class BadgeService:
             config = {
                 "title": title,
                 "subtitle": subtitle,
-                "scale_factor": scale_factor
+                "scale_factor": scale_factor,
+                "has_logo": logo_path is not None
             }
 
             return BadgeResponse(

@@ -301,12 +301,17 @@ async def generate_badge_from_template(
         # Save uploaded template temporarily
         temp_template_path = await save_uploaded_template(template)
 
+        # Save logo if provided
+        if logo and logo.filename:
+            temp_logo_path = await save_uploaded_logo(logo)
+
         # Generate badge with text overlay
         result = await badge_service.generate_from_template(
             template_path=temp_template_path,
             title=title,
             subtitle=subtitle,
-            scale_factor=scale_factor
+            scale_factor=scale_factor,
+            logo_path=temp_logo_path
         )
 
         logger.info("Template badge generated successfully")
@@ -322,6 +327,8 @@ async def generate_badge_from_template(
         raise HTTPException(status_code=500, detail=f"Failed to generate badge: {str(e)}")
 
     finally:
-        # Always cleanup temporary template file
+        # Always cleanup temporary files
         if temp_template_path:
             cleanup_temp_template(temp_template_path)
+        if temp_logo_path:
+            cleanup_temp_logo(temp_logo_path)
